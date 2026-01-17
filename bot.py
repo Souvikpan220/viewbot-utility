@@ -7,7 +7,7 @@ from datetime import timedelta
 # ================== CONFIG ==================
 TOKEN = os.getenv("TOKEN")  # Railway secret
 
-BLACKLIST_ROLE_ID = 1454094941499293748
+BLACKLIST_ROLE_ID = "1454094941499293748" , "1460494191715942532"
 LOG_CHANNEL_ID = 1454114707849085095      # LOG CHANNEL ID
 WELCOME_CHANNEL_ID = 1453666469744476253  # WELCOME CHANNEL ID
 # ============================================
@@ -189,3 +189,4 @@ async def on_command_error(ctx, error):
         raise error
 
 bot.run(TOKEN)
+

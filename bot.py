@@ -7,20 +7,26 @@ from datetime import timedelta
 # ================== CONFIG ==================
 TOKEN = os.getenv("TOKEN")  # Railway secret
 
-BLACKLIST_ROLE_ID = "1454094941499293748" , "1460494191715942532"
-LOG_CHANNEL_ID = 1454114707849085095      # LOG CHANNEL ID
-WELCOME_CHANNEL_ID = 1453666469744476253  # WELCOME CHANNEL ID
+PERSISTENT_ROLE_IDS = [
+    1454094941499293748,
+    1460494191715942532
+]
+
+LOG_CHANNEL_ID = 1454114707849085095
+WELCOME_CHANNEL_ID = 1453666469744476253
 # ============================================
 
 if not TOKEN:
     raise RuntimeError("TOKEN environment variable not set")
 
 # ---------- DATABASE ----------
-conn = sqlite3.connect("blacklist.db")
+conn = sqlite3.connect("roles.db")
 cursor = conn.cursor()
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS blacklist (
-    user_id INTEGER PRIMARY KEY
+CREATE TABLE IF NOT EXISTS persistent_roles (
+    user_id INTEGER,
+    role_id INTEGER,
+    PRIMARY KEY (user_id, role_id)
 )
 """)
 conn.commit()
@@ -47,13 +53,15 @@ async def on_ready():
 
 @bot.event
 async def on_member_remove(member):
-    role = member.guild.get_role(BLACKLIST_ROLE_ID)
-    if role and role in member.roles:
-        cursor.execute(
-            "INSERT OR IGNORE INTO blacklist (user_id) VALUES (?)",
-            (member.id,)
-        )
-        conn.commit()
+    """Save roles when user leaves"""
+    for role_id in PERSISTENT_ROLE_IDS:
+        role = member.guild.get_role(role_id)
+        if role and role in member.roles:
+            cursor.execute(
+                "INSERT OR IGNORE INTO persistent_roles (user_id, role_id) VALUES (?, ?)",
+                (member.id, role_id)
+            )
+    conn.commit()
 
 @bot.event
 async def on_member_join(member):
@@ -65,21 +73,27 @@ async def on_member_join(member):
         )
         await msg.delete(delay=10)
 
-    # ---------- BLACKLIST CHECK ----------
+    # ---------- RESTORE ROLES ----------
     cursor.execute(
-        "SELECT user_id FROM blacklist WHERE user_id = ?",
+        "SELECT role_id FROM persistent_roles WHERE user_id = ?",
         (member.id,)
     )
-    if cursor.fetchone():
-        role = member.guild.get_role(BLACKLIST_ROLE_ID)
+    roles_to_restore = cursor.fetchall()
+
+    restored = []
+    for (role_id,) in roles_to_restore:
+        role = member.guild.get_role(role_id)
         if role:
-            await member.add_roles(role, reason="Blacklisted user rejoined")
-            await send_log(
-                member.guild,
-                "🚫 Blacklisted User Rejoined",
-                f"User: {member.mention}\nID: `{member.id}`",
-                discord.Color.orange()
-            )
+            await member.add_roles(role, reason="Rejoined server – role restored")
+            restored.append(role.name)
+
+    if restored:
+        await send_log(
+            member.guild,
+            "♻️ Roles Restored",
+            f"User: {member.mention}\nRestored Roles: {', '.join(restored)}",
+            discord.Color.orange()
+        )
 
 # ---------- MODERATION ----------
 @bot.command()
@@ -114,8 +128,6 @@ async def lock(ctx):
     ow.send_messages = False
     await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=ow)
     await ctx.send("🔒 Channel locked")
-    await send_log(ctx.guild, "🔒 Channel Locked",
-        f"Channel: {ctx.channel.mention}\nModerator: {ctx.author}")
 
 @bot.command()
 @commands.has_permissions(manage_channels=True)
@@ -124,30 +136,6 @@ async def unlock(ctx):
     ow.send_messages = None
     await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=ow)
     await ctx.send("🔓 Channel unlocked")
-    await send_log(ctx.guild, "🔓 Channel Unlocked",
-        f"Channel: {ctx.channel.mention}\nModerator: {ctx.author}",
-        discord.Color.green())
-
-@bot.command()
-@commands.has_permissions(manage_channels=True)
-async def hide(ctx):
-    ow = ctx.channel.overwrites_for(ctx.guild.default_role)
-    ow.view_channel = False
-    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=ow)
-    await ctx.send("🙈 Channel hidden")
-    await send_log(ctx.guild, "🙈 Channel Hidden",
-        f"Channel: {ctx.channel.mention}\nModerator: {ctx.author}")
-
-@bot.command()
-@commands.has_permissions(manage_channels=True)
-async def unhide(ctx):
-    ow = ctx.channel.overwrites_for(ctx.guild.default_role)
-    ow.view_channel = None
-    await ctx.channel.set_permissions(ctx.guild.default_role, overwrite=ow)
-    await ctx.send("👀 Channel unhidden")
-    await send_log(ctx.guild, "👀 Channel Unhidden",
-        f"Channel: {ctx.channel.mention}\nModerator: {ctx.author}",
-        discord.Color.green())
 
 # ---------- PURGE ----------
 @bot.command()
@@ -159,22 +147,6 @@ async def purge(ctx, amount: int):
     deleted = await ctx.channel.purge(limit=amount + 1)
     msg = await ctx.send(f"🧹 Deleted `{len(deleted)-1}` messages")
     await msg.delete(delay=3)
-    await send_log(ctx.guild, "🧹 Messages Purged",
-        f"Moderator: {ctx.author}\nChannel: {ctx.channel.mention}\nCount: `{len(deleted)-1}`",
-        discord.Color.purple())
-
-# ---------- ADMIN DM ----------
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def dm(ctx, member: discord.Member, *, message):
-    try:
-        await member.send(message)
-        await ctx.send(f"📩 DM sent to {member}")
-        await send_log(ctx.guild, "📩 Admin DM Sent",
-            f"To: {member}\nAdmin: {ctx.author}\n```{message}```",
-            discord.Color.blue())
-    except discord.Forbidden:
-        await ctx.send("❌ Cannot DM this user")
 
 # ---------- ERRORS ----------
 @bot.event
@@ -189,4 +161,3 @@ async def on_command_error(ctx, error):
         raise error
 
 bot.run(TOKEN)
-
